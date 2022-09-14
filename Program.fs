@@ -22,13 +22,14 @@ let main argv =
     //(fun e -> match e with | (Next v) -> printfn v |> ignore) |> Observer
 
     use subs =
-        observable2.SubscribeWith(
-            Observer.Create(
-                (fun v -> Console.WriteLine(v)),
-                (fun () -> Console.WriteLine("Error")),
-                (fun () -> Console.WriteLine("Completed"))
+         (observable |> concat observable)
+            .SubscribeWith(
+                Observer.Create(
+                    (fun v -> Console.WriteLine(v)),
+                    (fun e -> Console.WriteLine("Error: " + e.ToString())),
+                    (fun () -> Console.WriteLine("Completed"))
+                )
             )
-        )
 
     Console.ReadKey() |> ignore
     0 // return an integer exit code

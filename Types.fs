@@ -2,11 +2,11 @@ namespace FsRX
 
 open System
 
-[<Struct>]
+
 type Event<'T> =
     | Next of 'T
     | Completed
-    | Error
+    | Error of Exception
 
 type Observer<'T> =
     | Observer of (Event<'T> -> unit)
@@ -19,7 +19,7 @@ type Observer<'T> =
             match e with
             | Next value -> onNext value
             | Completed -> onCompleted ()
-            | Error -> onError ())
+            | Error e -> onError e)
 
         |> Observer
 
@@ -29,7 +29,7 @@ type Observer<'T> =
     static member CreateForwarding<'T>(observerToForward: Observer<'T>) =
         Observer.Create(
             (fun v -> observerToForward.Notify(v |> Next)),
-            (fun () -> observerToForward.Notify(Error)),
+            (fun e -> observerToForward.Notify(e |> Error)),
             (fun () -> observerToForward.Notify(Completed))
         )
 
@@ -48,6 +48,7 @@ module Disposable =
         { new IDisposable with
             member this.Dispose() = action () }
 
+//[<AutoOpen>]
 [<AutoOpen>]
 module Functions =
     open System
@@ -70,9 +71,9 @@ module Functions =
     let never () =
         (fun _ -> Disposable.empty ()) |> Subscribe
 
-    let throw () =
+    let throw e =
         (fun (observer: Observer<'T>) ->
-            observer.Notify(Error)
+            observer.Notify(e |> Error)
             Disposable.empty ())
         |> Subscribe
 
@@ -88,7 +89,7 @@ module Functions =
 
     let generate2 (initial: 'TState) condition iter resultSelector (timeSelector: 'TState -> TimeSpan) =
         fun (observer: Observer<'T>) ->
-            
+
             let rec generateInernal (curState) =
                 if curState |> condition |> not then
                     observer.Notify(Completed)
@@ -123,7 +124,7 @@ module Functions =
         let (Subscribe subscribe) = observable
 
         fun (observer: Observer<'V>) ->
-            //TODO: synchronization
+
             let outerCompleted = ref 0
             let isError = ref 0
             let childObservalesCompleted = ref 0
@@ -140,15 +141,17 @@ module Functions =
                     (fun v ->
                         if isError.Value = 0 then
                             observer.Notify(v |> Next)),
-                    (fun () ->
-                        Interlocked.Exchange( isError, 1) |> ignore
+                    (fun e ->
+                        Interlocked.Exchange(isError, 1) |> ignore
                         disposeChildren ()
-                        observer.Notify(Error)),
+                        observer.Notify(e |> Error)),
                     (fun () ->
-                        Interlocked.Increment( childObservalesCompleted)
+                        Interlocked.Increment(childObservalesCompleted)
                         |> ignore
 
-                        if outerCompleted.Value = 1 && isError.Value = 0 && childObservalesCompleted.Value = childSubscriptions.Count then
+                        if outerCompleted.Value = 1
+                           && isError.Value = 0
+                           && childObservalesCompleted.Value = childSubscriptions.Count then
                             observer.Notify(Completed)
                             disposeChildren ())
                 )
@@ -159,13 +162,11 @@ module Functions =
                         if outerCompleted.Value = 0 && isError.Value = 0 then
                             let observableChild = (value |> mapper)
                             childSubscriptions.Add(observableChild.SubscribeWith(observerForwarding))),
-                    (fun () ->
-                        Interlocked.Exchange( isError, 1) |> ignore
+                    (fun e ->
+                        Interlocked.Exchange(isError, 1) |> ignore
                         disposeChildren ()
-                        observer.Notify(Error)),
-                    (fun () ->
-                        Interlocked.Exchange( outerCompleted, 1)
-                        |> ignore)
+                        observer.Notify(e |> Error)),
+                    (fun () -> Interlocked.Exchange(outerCompleted, 1) |> ignore)
                 )
 
             observable.SubscribeWith(observerInternal)
@@ -202,4 +203,22 @@ module Functions =
                 empty ())
 
     let mergeAll observables = observables |> fromSeq |> join
-    let merge obs1 obs2 = [ obs1; obs2 ] |> mergeAll
+    let merge first second = [ first; second ] |> mergeAll
+
+    let concat (first: Observable<'T>) (second: Observable<'T>) =
+        fun (observer: Observer<'T>) ->
+            let subs1 =
+                Observer.Create(
+                    (fun v -> v |> Next |> observer.Notify),
+                    (fun e -> e |> Error |> observer.Notify),
+                    (fun () ->
+                        let subs2 =
+                            observer
+                            |> Observer.CreateForwarding
+                            |> second.SubscribeWith
+                        ())
+                )
+                |> first.SubscribeWith
+            subs1 //TODO: not good
+        |> Subscribe   
+            
