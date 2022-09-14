@@ -122,33 +122,36 @@ module Functions =
         let (Subscribe subscribe) = observable
 
         fun (observer: Observer<'V>) ->
-            let mutable outerCompleted = false;
+            let mutable outerCompleted = false
             let mutable childObservalesCompleted = 0
-            let childSubscriptions = new Collections.Generic.List<IDisposable>()
-            
-            let observerForwarding =  
+
+            let childSubscriptions =
+                new Collections.Generic.List<IDisposable>()
+
+            let observerForwarding =
                 Observer.Create(
                     (fun v -> observer.Notify(v |> Next)),
-                    (fun () -> 
-                        childSubscriptions.ForEach(fun d -> d.Dispose()) 
-                        observer.Notify(Error)                        
-                        ),
-                    (fun () -> 
+                    (fun () ->
+                        childSubscriptions.ForEach(fun d -> d.Dispose())
+                        observer.Notify(Error)),
+                    (fun () ->
                         childObservalesCompleted <- childObservalesCompleted + 1
-                        if outerCompleted && childObservalesCompleted = childSubscriptions.Count then                                
+
+                        if outerCompleted
+                           && childObservalesCompleted = childSubscriptions.Count then
                             observer.Notify(Completed)
                             childSubscriptions.ForEach(fun d -> d.Dispose()))
-                )            
+                )
 
-            let observerInternal =                                       
+            let observerInternal =
                 Observer.Create(
                     (fun value ->
                         let observableChild = (value |> mapper)
-                                                                                              
-                        childSubscriptions.Add(observableChild.SubscribeWith(observerForwarding))                        
+
+                        childSubscriptions.Add(observableChild.SubscribeWith(observerForwarding))
                         ()),
-                    (fun () -> 
-                        childSubscriptions.ForEach(fun d -> d.Dispose()) 
+                    (fun () ->
+                        childSubscriptions.ForEach(fun d -> d.Dispose())
                         observer.Notify(Error)),
                     fun () -> outerCompleted <- true
                 )
@@ -158,6 +161,8 @@ module Functions =
 
     let map (mapper: 'T -> 'V) =
         bind (fun value -> value |> mapper |> ret)
+
+    let join observables = observables |> bind id
 
     let take count (ovservable: Observable<'T>) =
         (fun (observer: Observer<'T>) ->
@@ -183,7 +188,6 @@ module Functions =
                 v |> ret
             else
                 empty ())
-// let merge (observable1:Observable<'T>) (observable2:Observable<'T>) =
-//     (fun observer ->
-//         observable1.SubscribeWith(Observer.)
-//     ) |> Su
+
+    let mergeAll observables = observables |> fromSeq |> join
+    let merge obs1 obs2 = [ obs1; obs2 ] |> mergeAll
