@@ -1,5 +1,7 @@
 namespace FsRX
 
+open System
+
 [<Struct>]
 type Event<'T> =
     | Next of 'T
@@ -27,15 +29,24 @@ type Observer<'T> =
     static member CreateForwarding<'T>(observerToForward: Observer<'T>) =
         Observer.Create(
             (fun v -> observerToForward.Notify(v |> Next)),
-            (fun _ -> observerToForward.Notify(Error)),
-            (fun _ -> observerToForward.Notify(Completed))
+            (fun () -> observerToForward.Notify(Error)),
+            (fun () -> observerToForward.Notify(Completed))
         )
 
 type Observable<'T> =
-    | Subscribe of (Observer<'T> -> unit)
+    | Subscribe of (Observer<'T> -> IDisposable)
     member this.SubscribeWith(observer) =
         let (Subscribe s) = this
         observer |> s
+
+module Disposable =
+    let empty () =
+        { new IDisposable with
+            member this.Dispose() = () }
+
+    let create action =
+        { new IDisposable with
+            member this.Dispose() = action () }
 
 [<AutoOpen>]
 module Functions =
@@ -48,17 +59,20 @@ module Functions =
             seq
             |> Seq.iter (fun v -> observer.Notify(v |> Next))
 
-            observer.Notify(Completed))
+            observer.Notify(Completed)
+            Disposable.empty ())
         |> Subscribe
 
     let ret value = fromSeq (Seq.singleton value)
     let empty () = fromSeq Seq.empty
-    let never () = (fun _ -> ()) |> Subscribe
+
+    let never () =
+        (fun _ -> Disposable.empty ()) |> Subscribe
 
     let throw () =
         (fun (observer: Observer<'T>) ->
             observer.Notify(Error)
-            ())
+            Disposable.empty ())
         |> Subscribe
 
     let generate (initial: 'TState) condition iter resultSelector =
@@ -73,20 +87,26 @@ module Functions =
 
     let generate2 (initial: 'TState) condition iter resultSelector (timeSelector: 'TState -> TimeSpan) =
         fun (observer: Observer<'T>) ->
+            //let mutable counter = 0
             let rec generateInernal (curState) =
                 if curState |> condition |> not then
                     observer.Notify(Completed)
                 else
                     let timer = new Timers.Timer()
+
                     timer.Interval <- (curState |> timeSelector).TotalMilliseconds
+                    timer.AutoReset <- false
 
                     timer.Elapsed.Add (fun _ ->
                         observer.Notify(curState |> resultSelector |> Next)
                         timer.Dispose()
-                        generateInernal (curState |> iter))
+                        //TODO:
+                        let subscription = generateInernal (curState |> iter)
+                        ())
 
-                    timer.AutoReset <- false
                     timer.Start()
+                //TODO:
+                Disposable.empty ()
 
             generateInernal initial
         |> Subscribe
@@ -102,28 +122,44 @@ module Functions =
         let (Subscribe subscribe) = observable
 
         fun (observer: Observer<'V>) ->
-            let observerInternal =
+            let mutable outerCompleted = false;
+            let mutable childObservalesCompleted = 0
+            let childSubscriptions = new Collections.Generic.List<IDisposable>()
+            
+            let observerForwarding =  
+                Observer.Create(
+                    (fun v -> observer.Notify(v |> Next)),
+                    (fun () -> 
+                        childSubscriptions.ForEach(fun d -> d.Dispose()) 
+                        observer.Notify(Error)                        
+                        ),
+                    (fun () -> 
+                        childObservalesCompleted <- childObservalesCompleted + 1
+                        if outerCompleted && childObservalesCompleted = childSubscriptions.Count then                                
+                            observer.Notify(Completed)
+                            childSubscriptions.ForEach(fun d -> d.Dispose()))
+                )            
+
+            let observerInternal =                                       
                 Observer.Create(
                     (fun value ->
                         let observableChild = (value |> mapper)
-
-                        let observerForwarding =
-                            createObserver (fun v -> observer.Notify(v |> Next))
-
-                        observableChild.SubscribeWith(observerForwarding)),
-                    (fun _ -> observer.Notify(Error)),
-                    fun _ -> observer.Notify(Completed)
+                                                                                              
+                        childSubscriptions.Add(observableChild.SubscribeWith(observerForwarding))                        
+                        ()),
+                    (fun () -> 
+                        childSubscriptions.ForEach(fun d -> d.Dispose()) 
+                        observer.Notify(Error)),
+                    fun () -> outerCompleted <- true
                 )
 
             observable.SubscribeWith(observerInternal)
-            ()
         |> Subscribe
 
     let map (mapper: 'T -> 'V) =
         bind (fun value -> value |> mapper |> ret)
 
     let take count (ovservable: Observable<'T>) =
-
         (fun (observer: Observer<'T>) ->
             let mutable curCount = 0
 
@@ -135,8 +171,19 @@ module Functions =
 
                     if curCount = count then
                         observer.Notify(Completed)
-                        curCount <- curCount + 1
-                 )
+                        curCount <- curCount + 1)
                 |> createObserver
             ))
         |> Subscribe
+
+    let filter predicate observable =
+        observable
+        |> bind (fun v ->
+            if v |> predicate then
+                v |> ret
+            else
+                empty ())
+// let merge (observable1:Observable<'T>) (observable2:Observable<'T>) =
+//     (fun observer ->
+//         observable1.SubscribeWith(Observer.)
+//     ) |> Su

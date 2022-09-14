@@ -12,19 +12,19 @@ let main argv =
         interval (TimeSpan.FromSeconds 1.0)
         |> map (fun v -> v + 1)
         |> take 5
-
+        
     let observable2 =
         fromSeq { 1 .. 5 }
-        |> bind (fun v -> interval (TimeSpan.FromSeconds(v |> float)))
+        |> bind (fun v ->  TimeSpan.FromSeconds(1.0) |> interval |> take v )
 
     // let observer =
     //(fun e -> match e with | (Next v) -> printfn v |> ignore) |> Observer
 
-    observable.SubscribeWith(
+    use subs = observable2.SubscribeWith(
         Observer.Create(
-            (fun v -> printfn "%d" v),
-            (fun () -> printfn "%s" "Error"),
-            (fun () -> printfn "%s" "Completed")
+            (fun v -> Console.WriteLine(v)),
+            (fun () -> Console.WriteLine("Error")),
+            (fun () -> Console.WriteLine("Completed"))
         )
     )
 
