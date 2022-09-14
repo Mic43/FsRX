@@ -51,6 +51,7 @@ module Disposable =
 [<AutoOpen>]
 module Functions =
     open System
+    open System.Threading
 
     let private createObserver<'T> (onNext: 'T -> unit) = Observer.Create(onNext)
 
@@ -87,7 +88,7 @@ module Functions =
 
     let generate2 (initial: 'TState) condition iter resultSelector (timeSelector: 'TState -> TimeSpan) =
         fun (observer: Observer<'T>) ->
-            //let mutable counter = 0
+            
             let rec generateInernal (curState) =
                 if curState |> condition |> not then
                     observer.Notify(Completed)
@@ -122,38 +123,49 @@ module Functions =
         let (Subscribe subscribe) = observable
 
         fun (observer: Observer<'V>) ->
-            let mutable outerCompleted = false
-            let mutable childObservalesCompleted = 0
+            //TODO: synchronization
+            let outerCompleted = ref 0
+            let isError = ref 0
+            let childObservalesCompleted = ref 0
 
             let childSubscriptions =
-                new Collections.Generic.List<IDisposable>()
+                new Collections.Concurrent.ConcurrentBag<IDisposable>()
+
+            let disposeChildren () =
+                for c in childSubscriptions do
+                    c.Dispose()
 
             let observerForwarding =
                 Observer.Create(
-                    (fun v -> observer.Notify(v |> Next)),
+                    (fun v ->
+                        if isError.Value = 0 then
+                            observer.Notify(v |> Next)),
                     (fun () ->
-                        childSubscriptions.ForEach(fun d -> d.Dispose())
+                        Interlocked.Exchange( isError, 1) |> ignore
+                        disposeChildren ()
                         observer.Notify(Error)),
                     (fun () ->
-                        childObservalesCompleted <- childObservalesCompleted + 1
+                        Interlocked.Increment( childObservalesCompleted)
+                        |> ignore
 
-                        if outerCompleted
-                           && childObservalesCompleted = childSubscriptions.Count then
+                        if outerCompleted.Value = 1 && isError.Value = 0 && childObservalesCompleted.Value = childSubscriptions.Count then
                             observer.Notify(Completed)
-                            childSubscriptions.ForEach(fun d -> d.Dispose()))
+                            disposeChildren ())
                 )
 
             let observerInternal =
                 Observer.Create(
                     (fun value ->
-                        let observableChild = (value |> mapper)
-
-                        childSubscriptions.Add(observableChild.SubscribeWith(observerForwarding))
-                        ()),
+                        if outerCompleted.Value = 0 && isError.Value = 0 then
+                            let observableChild = (value |> mapper)
+                            childSubscriptions.Add(observableChild.SubscribeWith(observerForwarding))),
                     (fun () ->
-                        childSubscriptions.ForEach(fun d -> d.Dispose())
+                        Interlocked.Exchange( isError, 1) |> ignore
+                        disposeChildren ()
                         observer.Notify(Error)),
-                    fun () -> outerCompleted <- true
+                    (fun () ->
+                        Interlocked.Exchange( outerCompleted, 1)
+                        |> ignore)
                 )
 
             observable.SubscribeWith(observerInternal)
@@ -166,17 +178,17 @@ module Functions =
 
     let take count (ovservable: Observable<'T>) =
         (fun (observer: Observer<'T>) ->
-            let mutable curCount = 0
+            let curCount = ref 0
 
             ovservable.SubscribeWith(
                 (fun value ->
-                    if curCount < count then
+                    if curCount.Value < count then
                         observer.Notify(value |> Next)
-                        curCount <- curCount + 1
+                        Interlocked.Increment(curCount) |> ignore
 
-                    if curCount = count then
+                    if curCount.Value = count then
                         observer.Notify(Completed)
-                        curCount <- curCount + 1)
+                        Interlocked.Increment(curCount) |> ignore)
                 |> createObserver
             ))
         |> Subscribe
