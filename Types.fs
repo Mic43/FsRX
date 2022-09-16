@@ -35,7 +35,7 @@ type Observer<'T> =
             observerToForward: Observer<'T>,
             (?onNext: 'T -> unit),
             (?onCompleted: unit -> unit),
-            (?onError: Exception -> unit)     
+            (?onError: Exception -> unit)
         ) =
         let onCompleted =
             defaultArg onCompleted (fun () -> observerToForward.Notify(Completed))
@@ -70,6 +70,11 @@ module Functions =
     open System.Threading
     open System.Threading.Tasks
 
+    // let private protect observable call =
+    //     try
+    //         call()
+    //     with
+    //         | :? SystemException as e ->
     let private createObserver<'T> (onNext: 'T -> unit) = Observer.Create(onNext)
 
     let fromSeq seq =
@@ -103,7 +108,13 @@ module Functions =
             Disposable.empty ()
         |> Subscribe
 
-    let generate2 (initial: 'TState) condition iter resultSelector (timeSelector: 'TState -> TimeSpan) =
+    let generate2
+        (initial: 'TState)
+        condition
+        iter
+        (resultSelector: 'TState -> 'T)
+        (timeSelector: 'TState -> TimeSpan)
+        =
         fun (observer: Observer<'T>) ->
 
             let rec generateInernal (curState) =
@@ -113,14 +124,13 @@ module Functions =
                     let observable =
                         curState
                         |> resultSelector
-                        |> Next
                         |> ret
                         |> delay (curState |> timeSelector)
 
                     let subs =
                         Observer.Create(
                             (fun v ->
-                                do observer.Notify(v)
+                                do observer.Notify(v |> Next)
                                 let subscription = generateInernal (curState |> iter)
                                 ()),
                             (fun e -> do observer.Notify(e |> Error))
@@ -144,13 +154,11 @@ module Functions =
             initial
         |> fromSeq
 
-
     let interval period =
         generate2 0 (fun _ -> true) (fun i -> i + 1) id (fun _ -> period)
 
     let range min max =
         generate min (fun cur -> cur < max) (fun cur -> cur + 1) id
-
 
     let bind (mapper: 'T -> Observable<'V>) (observable: Observable<'T>) : Observable<'V> =
         let (Subscribe subscribe) = observable
@@ -209,25 +217,31 @@ module Functions =
 
     let join observables = observables |> bind id
 
-    let take count (ovservable: Observable<'T>) =
+    let takeWhile predicate (ovservable: Observable<'T>) =
         (fun (observer: Observer<'T>) ->
-            let curCount = ref 0
-          
+            let stopped = ref false
             ovservable.SubscribeWith(
-
                 Observer.CreateForwarding(
                     observer,
                     (fun value ->
-                        if curCount.Value < count then
-                            observer.Notify(value |> Next)
-                            Interlocked.Increment(curCount) |> ignore
-
-                        if curCount.Value = count then
-                            observer.Notify(Completed)
-                            Interlocked.Increment(curCount) |> ignore)
+                        if not stopped.Value then
+                            if value |> predicate then
+                                value |> Next
+                            else
+                                stopped.Value <- true 
+                                Completed
+                            |> observer.Notify)
                 )
             ))
         |> Subscribe
+
+    let take count (ovservable: Observable<'T>) =
+        let curCount = ref 0
+
+        ovservable |> takeWhile (fun _ ->
+            let res = curCount.Value < count
+            Interlocked.Increment(curCount) |> ignore
+            res)
 
     let filter predicate observable =
         observable
@@ -245,7 +259,7 @@ module Functions =
             let subs1 =
                 Observer.CreateForwarding(
                     observer,
-                    (fun v -> v |> Next |> observer.Notify),                    
+                    (fun v -> v |> Next |> observer.Notify),
                     (fun () ->
                         let subs2 =
                             observer
