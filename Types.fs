@@ -14,24 +14,39 @@ type Observer<'T> =
         let (Observer o) = this
         o e
 
-    static member Create<'T>(onNext: 'T -> unit, onError, onCompleted) =
+    static member Create<'T>(onNext: 'T -> unit, (?onError: Exception -> unit), (?onCompleted: unit -> unit)) =
+
+        let onCompleted = defaultArg onCompleted (fun () -> ())
+        let onError = defaultArg onError (fun _ -> ())
+
         (fun e ->
             match e with
-            | Next value -> onNext value
+            | Next value -> value |> onNext
             | Completed -> onCompleted ()
-            | Error e -> onError e)
+            | Error e -> e |> onError)
 
         |> Observer
 
-    static member Create<'T>(onNext: 'T -> unit) =
-        Observer.Create(onNext, (fun _ -> ()), (fun _ -> ()))
+    // static member Create<'T>(onNext: 'T -> unit) =
+    //     Observer.Create(onNext, (fun _ -> ()), (fun _ -> ()))
 
-    static member CreateForwarding<'T>(observerToForward: Observer<'T>) =
-        Observer.Create(
-            (fun v -> observerToForward.Notify(v |> Next)),
-            (fun e -> observerToForward.Notify(e |> Error)),
-            (fun () -> observerToForward.Notify(Completed))
-        )
+    static member CreateForwarding<'T>
+        (
+            observerToForward: Observer<'T>,
+            (?onNext: 'T -> unit),
+            (?onCompleted: unit -> unit),
+            (?onError: Exception -> unit)     
+        ) =
+        let onCompleted =
+            defaultArg onCompleted (fun () -> observerToForward.Notify(Completed))
+
+        let onError =
+            defaultArg onError (fun e -> observerToForward.Notify(e |> Error))
+
+        let onNext =
+            defaultArg onNext (fun v -> observerToForward.Notify(v |> Next))
+
+        Observer.Create(onNext, onError, onCompleted)
 
 type Observable<'T> =
     | Subscribe of (Observer<'T> -> IDisposable)
@@ -53,6 +68,7 @@ module Disposable =
 module Functions =
     open System
     open System.Threading
+    open System.Threading.Tasks
 
     let private createObserver<'T> (onNext: 'T -> unit) = Observer.Create(onNext)
 
@@ -77,6 +93,47 @@ module Functions =
             Disposable.empty ())
         |> Subscribe
 
+    let delay (period: TimeSpan) (observable: Observable<'T>) =
+        fun (observer: Observer<'T>) ->
+            let task =
+                Task
+                    .Delay(period)
+                    .ContinueWith(fun _ -> observer |> observable.SubscribeWith |> ignore)
+
+            Disposable.empty ()
+        |> Subscribe
+
+    let generate2 (initial: 'TState) condition iter resultSelector (timeSelector: 'TState -> TimeSpan) =
+        fun (observer: Observer<'T>) ->
+
+            let rec generateInernal (curState) =
+                if curState |> condition |> not then
+                    observer.Notify(Completed)
+                else
+                    let observable =
+                        curState
+                        |> resultSelector
+                        |> Next
+                        |> ret
+                        |> delay (curState |> timeSelector)
+
+                    let subs =
+                        Observer.Create(
+                            (fun v ->
+                                do observer.Notify(v)
+                                let subscription = generateInernal (curState |> iter)
+                                ()),
+                            (fun e -> do observer.Notify(e |> Error))
+                        )
+                        |> observable.SubscribeWith
+
+                    ()
+
+                Disposable.empty ()
+
+            generateInernal initial
+        |> Subscribe
+
     let generate (initial: 'TState) condition iter resultSelector =
         Seq.unfold
             (fun s ->
@@ -87,31 +144,6 @@ module Functions =
             initial
         |> fromSeq
 
-    let generate2 (initial: 'TState) condition iter resultSelector (timeSelector: 'TState -> TimeSpan) =
-        fun (observer: Observer<'T>) ->
-
-            let rec generateInernal (curState) =
-                if curState |> condition |> not then
-                    observer.Notify(Completed)
-                else
-                    let timer = new Timers.Timer()
-
-                    timer.Interval <- (curState |> timeSelector).TotalMilliseconds
-                    timer.AutoReset <- false
-
-                    timer.Elapsed.Add (fun _ ->
-                        observer.Notify(curState |> resultSelector |> Next)
-                        timer.Dispose()
-                        //TODO:
-                        let subscription = generateInernal (curState |> iter)
-                        ())
-
-                    timer.Start()
-                //TODO:
-                Disposable.empty ()
-
-            generateInernal initial
-        |> Subscribe
 
     let interval period =
         generate2 0 (fun _ -> true) (fun i -> i + 1) id (fun _ -> period)
@@ -180,17 +212,20 @@ module Functions =
     let take count (ovservable: Observable<'T>) =
         (fun (observer: Observer<'T>) ->
             let curCount = ref 0
-
+          
             ovservable.SubscribeWith(
-                (fun value ->
-                    if curCount.Value < count then
-                        observer.Notify(value |> Next)
-                        Interlocked.Increment(curCount) |> ignore
 
-                    if curCount.Value = count then
-                        observer.Notify(Completed)
-                        Interlocked.Increment(curCount) |> ignore)
-                |> createObserver
+                Observer.CreateForwarding(
+                    observer,
+                    (fun value ->
+                        if curCount.Value < count then
+                            observer.Notify(value |> Next)
+                            Interlocked.Increment(curCount) |> ignore
+
+                        if curCount.Value = count then
+                            observer.Notify(Completed)
+                            Interlocked.Increment(curCount) |> ignore)
+                )
             ))
         |> Subscribe
 
@@ -208,17 +243,18 @@ module Functions =
     let concat (first: Observable<'T>) (second: Observable<'T>) =
         fun (observer: Observer<'T>) ->
             let subs1 =
-                Observer.Create(
-                    (fun v -> v |> Next |> observer.Notify),
-                    (fun e -> e |> Error |> observer.Notify),
+                Observer.CreateForwarding(
+                    observer,
+                    (fun v -> v |> Next |> observer.Notify),                    
                     (fun () ->
                         let subs2 =
                             observer
                             |> Observer.CreateForwarding
                             |> second.SubscribeWith
+
                         ())
                 )
                 |> first.SubscribeWith
+
             subs1 //TODO: not good
-        |> Subscribe   
-            
+        |> Subscribe
