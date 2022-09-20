@@ -6,7 +6,6 @@ open FsRX
 
 [<AbstractClass>]
 type BasicObservable<'T>() =
-    //inherit IObservable<'T>
     let subscriptions = new ConcurrentBag<IObserver<'T>>()
     member internal this.Subscriptions = subscriptions
 
@@ -15,27 +14,35 @@ type BasicObservable<'T>() =
 
     abstract Subscribe : IObserver<'T> -> IDisposable
 
+    default this.Subscribe(observer: IObserver<'T>) : IDisposable =
+        this.Subscriptions.Add(observer)
+
+        Disposable.create (fun () ->
+            this.Subscriptions.TryTake(ref observer) |> ignore
+            ())
 
 module Functions =
-    let fromSeq<'T> seq =
+    let fromSeq<'T> seq : IObservable<'T> =
         { new BasicObservable<'T>() with
             override this.Subscribe(observer) =
-                this.Subscriptions.Add(observer)
+                let subs = base.Subscribe(observer)
+
                 seq |> Seq.iter (fun v -> v |> observer.OnNext)
-           
+                observer.OnCompleted()
 
-               
-                do observer.OnCompleted()
-                Disposable.empty () }
+                subs }
 
-//let ret value = fromSeq (Seq.singleton value)
-//let empty () = fromSeq Seq.empty
+    let ret value = fromSeq (Seq.singleton value)
+    let empty () = fromSeq Seq.empty
 
-//let never () =
-//    (fun _ -> Disposable.empty ()) |> Subscribe
+    let never () =
+        { new BasicObservable<'T>() with
+            override _.Subscribe(_) = Disposable.empty () }
 
-//let throw e =
-//    (fun (observer: Observer<'T>) ->
-//        observer.Notify(e |> Error)
-//        Disposable.empty ())
-//    |> Subscribe
+    let throw e =
+        { new BasicObservable<'T>() with
+            override _.Subscribe(observer) =
+                let subs = base.Subscribe(observer)
+                e |> observer.OnError
+
+                subs }
