@@ -220,6 +220,7 @@ module Functions =
     let takeWhile predicate (ovservable: Observable<'T>) =
         (fun (observer: Observer<'T>) ->
             let stopped = ref false
+
             ovservable.SubscribeWith(
                 Observer.CreateForwarding(
                     observer,
@@ -228,7 +229,7 @@ module Functions =
                             if value |> predicate then
                                 value |> Next
                             else
-                                stopped.Value <- true 
+                                stopped.Value <- true
                                 Completed
                             |> observer.Notify)
                 )
@@ -238,7 +239,8 @@ module Functions =
     let take count (ovservable: Observable<'T>) =
         let curCount = ref 0
 
-        ovservable |> takeWhile (fun _ ->
+        ovservable
+        |> takeWhile (fun _ ->
             let res = curCount.Value < count
             Interlocked.Increment(curCount) |> ignore
             res)
