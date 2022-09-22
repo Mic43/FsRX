@@ -5,6 +5,8 @@ VisualStudioVersion = 17.3.32901.215
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "FsRX", "FsRX.fsproj", "{A30B455B-8D72-4F74-A8CA-179FEEC9201D}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FsRX.Tests", "..\FsRX.Tests\FsRX.Tests.fsproj", "{07C24AAD-24C3-486E-8482-6D6BE86D16C0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{A30B455B-8D72-4F74-A8CA-179FEEC9201D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A30B455B-8D72-4F74-A8CA-179FEEC9201D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A30B455B-8D72-4F74-A8CA-179FEEC9201D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{07C24AAD-24C3-486E-8482-6D6BE86D16C0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{07C24AAD-24C3-486E-8482-6D6BE86D16C0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{07C24AAD-24C3-486E-8482-6D6BE86D16C0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{07C24AAD-24C3-486E-8482-6D6BE86D16C0}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

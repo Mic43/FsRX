@@ -13,7 +13,7 @@ type Observer<'T> =
     member this.Notify(e) =
         let (Observer o) = this
         o e
-
+            
     static member Create<'T>(onNext: 'T -> unit, (?onError: Exception -> unit), (?onCompleted: unit -> unit)) =
 
         let onCompleted = defaultArg onCompleted (fun () -> ())
@@ -62,7 +62,9 @@ module Disposable =
     let create action =
         { new IDisposable with
             member this.Dispose() = action () }
-
+    let composite (disposables: list<IDisposable>) = 
+      { new IDisposable with
+            member this.Dispose() = disposables |>  List.iter (fun d -> d.Dispose()) }
 //[<AutoOpen>]
 [<AutoOpen>]
 module Functions =
