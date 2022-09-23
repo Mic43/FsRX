@@ -51,7 +51,7 @@ let main argv =
     // Console.ReadKey() |> ignore
     // subs.Dispose()
 
-    //let s2 = ((range 1 5) |> delay (TimeSpan.FromSeconds(2))).Subscribe(
+    //let s2 = ((range 1 5) |> delay (TimeSpan.FromSeconds(5))).Subscribe(
     //     Observer.Create(
     //                (fun (v:int) -> Console.WriteLine(v)),
     //                (fun e -> Console.WriteLine("Error: " + e.ToString())),
@@ -72,5 +72,7 @@ let main argv =
         |> FsRX.Stateful.Functions.fromObserver
         |> obs.Subscribe
 
+    Console.ReadKey() |> ignore
+    subs.Dispose()
     Console.ReadKey() |> ignore
     0

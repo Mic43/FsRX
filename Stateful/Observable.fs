@@ -15,7 +15,7 @@ type BasicObservable<'T>() =
 
     abstract Subscribe : IObserver<'T> -> IDisposable
 
-    member internal this.Notify (observer: IObserver<'T>) event =
+    member internal this.TryNotify (observer: IObserver<'T>) event =
         if this.Subscriptions.TryPeek(ref observer) then
             match event with
             | Next v -> v |> observer.OnNext
@@ -55,8 +55,10 @@ module Functions =
             override this.Subscribe(observer) =
                 let subs = base.Subscribe(observer)
 
-                seq |> Seq.iter (fun v -> v |> observer.OnNext)
-                // observer.OnCompleted() |> this.protect
+                seq
+                |> Seq.iter (fun v -> v |> Next |> this.TryNotify(observer))
+
+                Completed |> this.TryNotify(observer)
 
                 subs }
 
@@ -69,39 +71,37 @@ module Functions =
 
     let throw e =
         { new BasicObservable<'T>() with
-            override _.Subscribe(observer) =
+            override this.Subscribe(observer) =
                 let subs = base.Subscribe(observer)
-                e |> observer.OnError
+                e |> Error |> this.TryNotify(observer)
 
                 subs }
 
     let delay (period: TimeSpan) (observable: IObservable<'T>) =
         fun (observer: IObserver<'T>) ->
-            let tokenSource = new CancellationTokenSource()
-            let token = tokenSource.Token
+
+            let mutable innerSubscription: IDisposable ref = ref null
+            let mutable isDisposing = ref 0
 
             let task =
                 Task
-                    .Delay(period, token)
+                    .Delay(period)
                     .ContinueWith(
-                        (fun _ -> observer |> observable.Subscribe),
-                        token,
-                        TaskContinuationOptions.OnlyOnRanToCompletion,
-                        TaskScheduler.Default
+                        (fun _ ->
+                            if isDisposing.Value = 0 then
+                                let subs = observer |> observable.Subscribe
+
+                                Interlocked.Exchange(innerSubscription, subs)
+                                |> ignore),
+                        TaskContinuationOptions.OnlyOnRanToCompletion
                     )
 
             Disposable.create (fun () ->
-                tokenSource.Cancel()
+                Interlocked.Exchange(isDisposing, 1) |> ignore
 
-                try
-                    let (res) = task.Result
-                    res.Dispose()
-                with
-                | :? AggregateException as e ->
-                    if e.InnerExceptions
-                       |> Seq.filter (fun e -> e :? TaskCanceledException)
-                       |> Seq.isEmpty then
-                        raise e)
+                if innerSubscription <> ref null then
+                    do innerSubscription.Value.Dispose())
+
         |> fromFun
         |> asObservable
 
