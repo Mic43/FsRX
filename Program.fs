@@ -59,9 +59,17 @@ let main argv =
     //Console.ReadKey() |> ignore
     //s2.Dispose()
 
+  
+
 
     let obs =
-        (generate2 1 (fun i -> i < 5) (fun i -> i + 1) (fun i -> i) (fun i -> 1.0 |> TimeSpan.FromSeconds))
+        interval (1.0 |> TimeSpan.FromSeconds)
+        |> FsRX.Stateful.Functions.take 3
+
+
+    let observable2 =
+        obs
+        |> bind (fun v -> TimeSpan.FromSeconds(1.0) |> interval |> take 3)
 
     let subs =
         Observer.Create(
@@ -69,8 +77,8 @@ let main argv =
             (fun e -> Console.WriteLine("Error: " + e.ToString())),
             (fun () -> Console.WriteLine("Completed"))
         )
-        |> FsRX.Stateful.Functions.fromObserver
-        |> obs.Subscribe
+        |> fromObserver
+        |> observable2.Subscribe
 
     Console.ReadKey() |> ignore
     subs.Dispose()

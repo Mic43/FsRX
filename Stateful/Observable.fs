@@ -31,15 +31,46 @@ type BasicObservable<'T>() =
             this.Subscriptions.TryTake(ref observer) |> ignore
             ())
 
+type private ObserverFactory<'T> =
+    static member Create<'T>(onNext: 'T -> unit, (?onError: Exception -> unit), (?onCompleted: unit -> unit)) =
+
+        let onCompleted = defaultArg onCompleted (fun () -> ())
+        let onError = defaultArg onError (fun _ -> ())
+
+        { new IObserver<'T> with
+            member this.OnCompleted() : unit = onCompleted ()
+            member this.OnError(error: exn) : unit = error |> onError
+            member this.OnNext(value: 'T) : unit = value |> onNext }
+
+    static member CreateForwarding<'T>
+        (
+            observerToForward: IObserver<'T>,
+            (?onNext: 'T -> unit),
+            (?onCompleted: unit -> unit),
+            (?onError: Exception -> unit)
+        ) =
+        let onCompleted =
+            defaultArg onCompleted (fun () -> observerToForward.OnCompleted())
+
+        let onError =
+            defaultArg onError (fun e -> observerToForward.OnError(e))
+
+        let onNext =
+            defaultArg onNext (fun v -> observerToForward.OnNext(v))
+
+        ObserverFactory.Create(onNext, onError, onCompleted)
 
 module Functions =
     open System.Threading.Tasks
+
 
     let fromObserver<'T> (o: FsRX.Observer<'T>) =
         { new IObserver<'T> with
             member this.OnCompleted() : unit = Completed |> o.Notify
             member this.OnError(error: exn) : unit = error |> Error |> o.Notify
             member this.OnNext(value: 'T) : unit = value |> Next |> o.Notify }
+
+    // let createForwardingObserver
 
     let asObservable (o: BasicObservable<'T>) : IObservable<'T> = o
 
@@ -80,8 +111,8 @@ module Functions =
     let delay (period: TimeSpan) (observable: IObservable<'T>) =
         fun (observer: IObserver<'T>) ->
 
-            let mutable innerSubscription: IDisposable ref = ref null
-            let mutable isDisposing = ref 0
+            let innerSubscription: IDisposable ref = ref null
+            let isDisposing = ref 0
 
             let task =
                 Task
@@ -127,7 +158,7 @@ module Functions =
         =
         fun (observer: IObserver<'T>) ->
 
-            let mutable currentSubscription: IDisposable ref = ref null
+            let currentSubscription: IDisposable ref = ref null
 
             let disposeCurrentSubscription () =
                 if currentSubscription <> ref null then
@@ -147,7 +178,7 @@ module Functions =
 
                     Interlocked.Exchange(
                         currentSubscription,
-                        (Observer.Create(
+                        (ObserverFactory.Create(
                             (fun v ->
                                 do observer.OnNext(v)
                                 do generateInernal (curState |> iter)),
@@ -155,7 +186,6 @@ module Functions =
                                 do observer.OnError(e)
                                 disposeCurrentSubscription ())
                          )
-                         |> fromObserver
                          |> observable.Subscribe)
                     )
                     |> ignore
@@ -163,5 +193,131 @@ module Functions =
             do generateInernal initial
 
             Disposable.create (fun () -> disposeCurrentSubscription ())
+        |> fromFun
+        |> asObservable
+
+    let interval period =
+        generate2 0 (fun _ -> true) (fun i -> i + 1) id (fun _ -> period)
+
+    let bind (mapper: 'T -> IObservable<'V>) (observable: IObservable<'T>) : IObservable<'V> =
+        fun (observer: IObserver<'V>) ->
+            let outerCompleted = ref 0
+            let isStopped = ref 0
+            let childObservalesCompleted = ref 0
+
+            let childSubscriptions =
+                new Collections.Concurrent.ConcurrentBag<IDisposable>()
+
+            let stopAndDispose () =
+                Interlocked.Exchange(isStopped, 1) |> ignore
+
+                for c in childSubscriptions do
+                    c.Dispose()
+
+            let observerForwarding =
+                ObserverFactory.Create(
+                    (fun v ->
+                        if isStopped.Value = 0 then
+                            observer.OnNext(v)),
+                    (fun e ->
+                        stopAndDispose ()
+                        observer.OnError(e)),
+                    (fun () ->
+                        Interlocked.Increment(childObservalesCompleted)
+                        |> ignore
+
+                        if outerCompleted.Value = 1
+                           && isStopped.Value = 0
+                           && childObservalesCompleted.Value = childSubscriptions.Count then
+                            observer.OnCompleted()
+                            stopAndDispose ())
+                )
+
+            let observerInternal =
+                ObserverFactory.Create(
+                    (fun value ->
+                        if outerCompleted.Value = 0 && isStopped.Value = 0 then
+                            let observableChild = (value |> mapper)
+                            childSubscriptions.Add(observableChild.Subscribe(observerForwarding))),
+                    (fun e ->
+                        stopAndDispose ()
+                        observer.OnError(e)),
+                    (fun () -> Interlocked.Exchange(outerCompleted, 1) |> ignore)
+                )
+
+            [ observerInternal |> observable.Subscribe
+              stopAndDispose |> Disposable.create ]
+            |> Disposable.composite
+        |> fromFun
+        |> asObservable
+
+    let map (mapper: 'T -> 'V) =
+        bind (fun value -> value |> mapper |> ret)
+
+    let join observables = observables |> bind id
+
+    let takeWhile predicate (ovservable: IObservable<'T>) =
+        (fun (observer: IObserver<'T>) ->
+            let stopped = ref 0
+
+            ovservable.Subscribe(
+                ObserverFactory.CreateForwarding(
+                    observer,
+                    (fun value ->
+                        if stopped.Value = 0 then
+                            if value |> predicate then
+                                value |> observer.OnNext
+                            else
+                                Interlocked.Exchange(stopped, 1) |> ignore
+                                observer.OnCompleted()),
+                    id
+                )
+            ))
+        |> fromFun
+        |> asObservable
+
+    let take count (ovservable: IObservable<'T>) =
+        let curCount = ref 0
+
+        ovservable
+        |> takeWhile (fun _ ->
+            let res = curCount.Value < count
+            Interlocked.Increment(curCount) |> ignore
+            res)
+
+    let filter predicate observable =
+        observable
+        |> bind (fun v ->
+            if v |> predicate then
+                v |> ret
+            else
+                empty ())
+
+    let mergeAll observables = observables |> fromSeq |> join
+    let merge first second = [ first; second ] |> mergeAll
+
+    let concat (first: IObservable<'T>) (second: IObservable<'T>) =
+        fun (observer: IObserver<'T>) ->
+            let innerSubs: IDisposable ref = ref null
+
+            let subs1 =
+                ObserverFactory.CreateForwarding(
+                    observer,
+                    (fun v -> v |> observer.OnNext),
+                    (fun () ->
+                        let subs =
+                            observer
+                            |> ObserverFactory.CreateForwarding
+                            |> second.Subscribe
+
+                        Interlocked.Exchange(innerSubs, subs) |> ignore)
+                )
+                |> first.Subscribe
+
+            [ subs1
+              Disposable.create (fun () ->
+                  if innerSubs <> ref null then
+                      do innerSubs.Value.Dispose()) ]
+            |> Disposable.composite
         |> fromFun
         |> asObservable
