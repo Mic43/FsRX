@@ -277,13 +277,17 @@ module Functions =
         |> asObservable
 
     let take count (ovservable: IObservable<'T>) =
-        let curCount = ref 0
+        (fun observer ->
+            let curCount = ref 0
 
-        ovservable
-        |> takeWhile (fun _ ->
-            let res = curCount.Value < count
-            Interlocked.Increment(curCount) |> ignore
-            res)
+            (ovservable
+             |> takeWhile (fun _ ->
+                 let res = curCount.Value < count
+                 Interlocked.Increment(curCount) |> ignore
+                 res))
+                .Subscribe(observer))
+        |> fromFun
+        |> asObservable
 
     let filter predicate observable =
         observable

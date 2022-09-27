@@ -65,11 +65,28 @@ let main argv =
     let obs =
         interval (1.0 |> TimeSpan.FromSeconds)
         |> FsRX.Stateful.Functions.take 3
+    
+    //let subs =
+    //    Observer.Create(
+    //        (fun (v: int) -> Console.WriteLine(v)),
+    //        (fun e -> Console.WriteLine("Error: " + e.ToString())),
+    //        (fun () -> Console.WriteLine("Completed"))
+    //    )
+    //    |> fromObserver |> obs.Subscribe
 
+    //Console.ReadKey() |> ignore
+    //let subs2 =
+    //    Observer.Create(
+    //        (fun (v: int) -> Console.WriteLine(v)),
+    //        (fun e -> Console.WriteLine("Error: " + e.ToString())),
+    //        (fun () -> Console.WriteLine("Completed"))
+    //    )
+    //    |> fromObserver |> obs.Subscribe
+    //Console.ReadKey() |> ignore
 
     let observable2 =
         obs
-        |> bind (fun v -> TimeSpan.FromSeconds(1.0) |> interval |> take 3)
+        |> bind (fun v -> TimeSpan.FromSeconds(1.0) |> interval |> map (fun v2 -> v*10 + v2)  |> take 3)
 
     let subs =
         Observer.Create(
@@ -78,7 +95,7 @@ let main argv =
             (fun () -> Console.WriteLine("Completed"))
         )
         |> fromObserver
-        |> observable2.Subscribe
+        |> (concat obs obs).Subscribe
 
     Console.ReadKey() |> ignore
     subs.Dispose()
