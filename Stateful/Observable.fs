@@ -4,6 +4,7 @@ open System
 open System.Collections.Concurrent
 open FsRX
 open System.Threading
+open System.Collections.Concurrent
 
 [<AbstractClass>]
 type BasicObservable<'T>() =
@@ -15,6 +16,8 @@ type BasicObservable<'T>() =
 
     abstract Subscribe : IObserver<'T> -> IDisposable
 
+
+
     member internal this.TryNotify (observer: IObserver<'T>) event =
         if this.Subscriptions.TryPeek(ref observer) then
             match event with
@@ -23,6 +26,10 @@ type BasicObservable<'T>() =
             | Completed -> observer.OnCompleted()
 
         ()
+
+    member internal this.TryNotifyAll event =
+        this.Subscriptions
+        |> Seq.iter (fun o -> this.TryNotify o event)
 
     default this.Subscribe(observer: IObserver<'T>) : IDisposable =
         this.Subscriptions.Add(observer)
@@ -323,5 +330,45 @@ module Functions =
                   if innerSubs <> ref null then
                       do innerSubs.Value.Dispose()) ]
             |> Disposable.composite
+        |> fromFun
+        |> asObservable
+
+    let groupBy (keySelector: 'T -> 'TKey) (observable: IObservable<'T>) =
+        fun (observer: IObserver<'TKey * IObservable<'T>>) ->
+            let innerObservables =
+                new ConcurrentDictionary<'TKey, BasicObservable<'T>>()
+
+            observable.Subscribe(
+                ObserverFactory.Create(
+                    (fun v ->
+                        if v
+                           |> keySelector
+                           |> innerObservables.ContainsKey
+                           |> not then
+                            let targetObservable =
+                                (fun _ -> Disposable.empty ()) |> fromFun
+
+                            innerObservables.[v |> keySelector] <- targetObservable
+
+                            (v |> keySelector, targetObservable |> asObservable)
+                            |> observer.OnNext
+
+                        let targetObservable = innerObservables.[v |> keySelector]
+                        v |> Next |> targetObservable.TryNotifyAll
+
+                        ),
+                    (fun e ->
+                        e |> observer.OnError
+
+                        innerObservables.Values
+                        |> Seq.iter (fun observable -> e |> Error |> observable.TryNotifyAll)),
+                    (fun () ->
+                        // complete inner observables
+                        innerObservables.Values
+                        |> Seq.iter (fun observable -> Completed |> observable.TryNotifyAll)
+                        //complete main observable
+                        observer.OnCompleted())
+                )
+            )
         |> fromFun
         |> asObservable

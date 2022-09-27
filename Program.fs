@@ -64,7 +64,7 @@ let main argv =
 
     let obs =
         interval (1.0 |> TimeSpan.FromSeconds)
-        |> FsRX.Stateful.Functions.take 3
+        |> FsRX.Stateful.Functions.take 5
     
     //let subs =
     //    Observer.Create(
@@ -90,14 +90,23 @@ let main argv =
 
     let subs =
         Observer.Create(
-            (fun (v: int) -> Console.WriteLine(v)),
+            (fun ((p:int),(v:IObservable<int>)) -> 
+               // if p = 1 then      
+                    Console.WriteLine(p)
+                    Observer.Create(
+                               (fun (v: int) -> Console.WriteLine((p |> string)+ " " + (v |> string))),
+                               (fun e -> Console.WriteLine("Error: " + e.ToString())),
+                               (fun () -> Console.WriteLine("Completed " + string p ))
+                    ) |> fromObserver |>  v.Subscribe |> ignore
+            
+            ),
             (fun e -> Console.WriteLine("Error: " + e.ToString())),
-            (fun () -> Console.WriteLine("Completed"))
+            (fun () -> Console.WriteLine("Completed global"))
         )
         |> fromObserver
-        |> (concat obs obs).Subscribe
+        |> (obs |> groupBy (fun v -> v % 2)).Subscribe
 
     Console.ReadKey() |> ignore
     subs.Dispose()
-    Console.ReadKey() |> ignore
+    Console.ReadKey() |> ignore 
     0
