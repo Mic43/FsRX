@@ -5,6 +5,7 @@ open System.Collections.Concurrent
 open FsRX
 open System.Threading
 open System.Collections.Concurrent
+open System.Threading.Tasks
 
 [<AbstractClass>]
 type BasicObservable<'T>() =
@@ -15,8 +16,6 @@ type BasicObservable<'T>() =
         member this.Subscribe(observer: IObserver<'T>) : IDisposable = this.Subscribe(observer)
 
     abstract Subscribe : IObserver<'T> -> IDisposable
-
-
 
     member internal this.TryNotify (observer: IObserver<'T>) event =
         if this.Subscriptions.TryPeek(ref observer) then
@@ -67,17 +66,23 @@ type private ObserverFactory<'T> =
 
         ObserverFactory.Create(onNext, onError, onCompleted)
 
+module Observers =
+    let createDiagnostic<'T> () =
+        ObserverFactory.Create(
+            (fun (v: int) -> Console.WriteLine(v)),
+            (fun e -> Console.WriteLine("Error: " + e.ToString())),
+            (fun () -> Console.WriteLine("Completed"))
+        )
+
+
 module Functions =
     open System.Threading.Tasks
-
 
     let fromObserver<'T> (o: FsRX.Observer<'T>) =
         { new IObserver<'T> with
             member this.OnCompleted() : unit = Completed |> o.Notify
             member this.OnError(error: exn) : unit = error |> Error |> o.Notify
             member this.OnNext(value: 'T) : unit = value |> Next |> o.Notify }
-
-    // let createForwardingObserver
 
     let asObservable (o: BasicObservable<'T>) : IObservable<'T> = o
 
@@ -106,6 +111,7 @@ module Functions =
     let never () =
         { new BasicObservable<'T>() with
             override _.Subscribe(_) = Disposable.empty () }
+        |> asObservable
 
     let throw e =
         { new BasicObservable<'T>() with
@@ -370,5 +376,69 @@ module Functions =
                         observer.OnCompleted())
                 )
             )
+        |> fromFun
+        |> asObservable
+
+
+    let scan (folder: 'TState -> 'T -> 'TState) (state: 'TState) (observable: IObservable<'T>) =
+        fun (observer: IObserver<'TState>) ->
+            let mutable acc = state
+
+            observable.Subscribe(
+                ObserverFactory.Create(
+                    (fun v ->
+                        acc <- v |> folder acc
+                        acc |> observer.OnNext),
+                    (fun e -> e |> observer.OnError),
+                    (fun () -> observer.OnCompleted())
+                )
+            )
+
+        |> fromFun
+        |> asObservable
+
+    let tryLast (observable: IObservable<'T>) =
+
+        let completitionSource = new TaskCompletionSource<Option<'T>>()
+        let task = completitionSource.Task
+        let mutable subs = null
+
+        TaskFactory()
+            .StartNew(fun () ->
+                let mutable lastValue = None 
+
+                subs <-
+                    observable.Subscribe(
+                        ObserverFactory.Create(
+                            (fun v -> Interlocked.Exchange( &lastValue , v |> Some) |> ignore),
+                            (fun e -> e |> completitionSource.SetException |> ignore),
+                            (fun () -> lastValue |> completitionSource.SetResult)
+                        )
+                    )
+                ())
+        |> ignore
+
+        try
+            try
+                task.Result
+            with
+            | :? AggregateException as ex when task.IsFaulted -> raise task.Exception.InnerException
+        finally
+            if subs = null |> not then subs.Dispose()
+
+    let fold (folder: 'TState -> 'T -> 'TState) (state: 'TState) (observable: IObservable<'T>) =
+        fun (observer: IObserver<'TState>) ->
+            let mutable acc = state 
+
+            observable.Subscribe(
+                ObserverFactory.Create(
+                    (fun v -> Interlocked.Exchange(&acc ,v |> folder acc) |> ignore),
+                    (fun e -> e |> observer.OnError),
+                    (fun () ->
+                        acc |> observer.OnNext
+                        observer.OnCompleted())
+                )
+            )
+
         |> fromFun
         |> asObservable
