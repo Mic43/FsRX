@@ -6,6 +6,7 @@ open FsRX
 open System.Threading
 open System.Collections.Concurrent
 open System.Threading.Tasks
+open System.Collections.Generic
 
 [<AbstractClass>]
 type BasicObservable<'T>() =
@@ -290,6 +291,9 @@ module Functions =
         |> asObservable
 
     let take count (ovservable: IObservable<'T>) =
+        if count <= 0 then
+            "count must be grater than 0 " |> invalidOp
+
         (fun observer ->
             let curCount = ref 0
 
@@ -299,6 +303,29 @@ module Functions =
                  Interlocked.Increment(curCount) |> ignore
                  res))
                 .Subscribe(observer))
+        |> fromFun
+        |> asObservable
+
+    let takeLast count (observable: IObservable<'T>) =
+        if count <= 0 then
+            "count must be grater than 0 " |> invalidOp
+
+        fun (observer: IObserver<'T>) ->
+            let buffer = new LinkedList<'T>()
+
+            observable.Subscribe(
+                ObserverFactory.Create(
+                    (fun (v: 'T) ->
+                        if buffer.Count >= count then
+                            buffer.RemoveFirst()
+
+                        buffer.AddLast(v) |> ignore),
+                    (fun e -> e |> observer.OnError),
+                    (fun () ->
+                        buffer |> Seq.iter (fun v -> v |> observer.OnNext)
+                        observer.OnCompleted())
+                )
+            )
         |> fromFun
         |> asObservable
 
@@ -379,10 +406,10 @@ module Functions =
         |> fromFun
         |> asObservable
 
-
     let scan (folder: 'TState -> 'T -> 'TState) (state: 'TState) (observable: IObservable<'T>) =
         fun (observer: IObserver<'TState>) ->
             let mutable acc = state
+            acc |> observer.OnNext
 
             observable.Subscribe(
                 ObserverFactory.Create(
@@ -405,16 +432,19 @@ module Functions =
 
         TaskFactory()
             .StartNew(fun () ->
-                let mutable lastValue = None 
+                let mutable lastValue = None
 
                 subs <-
                     observable.Subscribe(
                         ObserverFactory.Create(
-                            (fun v -> Interlocked.Exchange( &lastValue , v |> Some) |> ignore),
+                            (fun v ->
+                                Interlocked.Exchange(&lastValue, v |> Some)
+                                |> ignore),
                             (fun e -> e |> completitionSource.SetException |> ignore),
                             (fun () -> lastValue |> completitionSource.SetResult)
                         )
                     )
+
                 ())
         |> ignore
 
@@ -424,15 +454,16 @@ module Functions =
             with
             | :? AggregateException as ex when task.IsFaulted -> raise task.Exception.InnerException
         finally
-            if subs = null |> not then subs.Dispose()
+            if subs = null |> not then
+                subs.Dispose()
 
     let fold (folder: 'TState -> 'T -> 'TState) (state: 'TState) (observable: IObservable<'T>) =
         fun (observer: IObserver<'TState>) ->
-            let mutable acc = state 
+            let mutable acc = state
 
             observable.Subscribe(
                 ObserverFactory.Create(
-                    (fun v -> Interlocked.Exchange(&acc ,v |> folder acc) |> ignore),
+                    (fun v -> acc <- v |> folder acc),
                     (fun e -> e |> observer.OnError),
                     (fun () ->
                         acc |> observer.OnNext
