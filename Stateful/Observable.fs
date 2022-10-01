@@ -306,6 +306,23 @@ module Functions =
         |> fromFun
         |> asObservable
 
+    let any (observable: IObservable<'T>) =
+        fun (o: IObserver<bool>) ->
+            let mutable hasValues = false
+
+            (observable |> take 1)
+                .Subscribe(
+                    ObserverFactory.Create(
+                        (fun v -> hasValues <- true),
+                        (fun e -> e |> o.OnError),
+                        (fun () ->
+                            hasValues |> o.OnNext
+                            o.OnCompleted())
+                    )
+                )
+        |> fromFun
+        |> asObservable
+
     let takeLast count (observable: IObservable<'T>) =
         if count <= 0 then
             "count must be grater than 0 " |> invalidOp
@@ -328,6 +345,48 @@ module Functions =
             )
         |> fromFun
         |> asObservable
+
+    let tryLast (observable: IObservable<'T>) =
+
+        let completitionSource = new TaskCompletionSource<Option<'T>>()
+        let task = completitionSource.Task
+        let mutable subs = null
+
+        TaskFactory()
+            .StartNew(fun () ->
+                let mutable lastValue = None
+
+                subs <-
+                    observable.Subscribe(
+                        ObserverFactory.Create(
+                            (fun v ->
+                                Interlocked.Exchange(&lastValue, v |> Some)
+                                |> ignore),
+                            (fun e -> e |> completitionSource.SetException |> ignore),
+                            (fun () -> lastValue |> completitionSource.SetResult)
+                        )
+                    )
+
+                ())
+        |> ignore
+
+        try
+            try
+                task.Result
+            with
+            | :? AggregateException as ex when task.IsFaulted -> raise task.Exception.InnerException
+        finally
+            if subs = null |> not then
+                subs.Dispose()
+
+    let tryFirst (observable: IObservable<'T>) = observable |> take 1 |> tryLast
+
+    let first (observable: IObservable<'T>) = //LanguagePrimitives.GenericZero
+        observable
+        |> tryFirst
+        |> Option.defaultWith (fun () ->
+            ("observable", "observable cannot be empty")
+            ||> invalidArg)
 
     let filter predicate observable =
         observable
@@ -408,6 +467,7 @@ module Functions =
 
     let scan (folder: 'TState -> 'T -> 'TState) (state: 'TState) (observable: IObservable<'T>) =
         fun (observer: IObserver<'TState>) ->
+            //TODO: should be interlocked!
             let mutable acc = state
             acc |> observer.OnNext
 
@@ -424,52 +484,16 @@ module Functions =
         |> fromFun
         |> asObservable
 
-    let tryLast (observable: IObservable<'T>) =
+    let fold folder (state: 'TState) (observable: IObservable<'T>) =
+        scan folder state observable |> takeLast 1
 
-        let completitionSource = new TaskCompletionSource<Option<'T>>()
-        let task = completitionSource.Task
-        let mutable subs = null
+    let inline sum () =
+        fold (+) LanguagePrimitives.GenericZero
 
-        TaskFactory()
-            .StartNew(fun () ->
-                let mutable lastValue = None
+    let inline min (observable: IObservable<'T>) =
+        observable
+        |> fold LanguagePrimitives.GenericMinimum (observable |> first)
 
-                subs <-
-                    observable.Subscribe(
-                        ObserverFactory.Create(
-                            (fun v ->
-                                Interlocked.Exchange(&lastValue, v |> Some)
-                                |> ignore),
-                            (fun e -> e |> completitionSource.SetException |> ignore),
-                            (fun () -> lastValue |> completitionSource.SetResult)
-                        )
-                    )
-
-                ())
-        |> ignore
-
-        try
-            try
-                task.Result
-            with
-            | :? AggregateException as ex when task.IsFaulted -> raise task.Exception.InnerException
-        finally
-            if subs = null |> not then
-                subs.Dispose()
-
-    let fold (folder: 'TState -> 'T -> 'TState) (state: 'TState) (observable: IObservable<'T>) =
-        fun (observer: IObserver<'TState>) ->
-            let mutable acc = state
-
-            observable.Subscribe(
-                ObserverFactory.Create(
-                    (fun v -> acc <- v |> folder acc),
-                    (fun e -> e |> observer.OnError),
-                    (fun () ->
-                        acc |> observer.OnNext
-                        observer.OnCompleted())
-                )
-            )
-
-        |> fromFun
-        |> asObservable
+    let inline max (observable: IObservable<'T>) =
+        observable
+        |> fold LanguagePrimitives.GenericMaximum (observable |> first)
