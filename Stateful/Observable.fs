@@ -125,6 +125,7 @@ module Functions =
     let delay (period: TimeSpan) (observable: IObservable<'T>) =
         fun (observer: IObserver<'T>) ->
 
+            //TODO: change to not reference
             let innerSubscription: IDisposable ref = ref null
             let isDisposing = ref 0
 
@@ -172,6 +173,7 @@ module Functions =
         =
         fun (observer: IObserver<'T>) ->
 
+            //TODO: change to not reference
             let currentSubscription: IDisposable ref = ref null
 
             let disposeCurrentSubscription () =
@@ -267,6 +269,25 @@ module Functions =
 
     let map (mapper: 'T -> 'V) =
         bind (fun value -> value |> mapper |> ret)
+
+    let withInterval period (sequence: seq<'T>) : IObservable<'T> =
+        (fun (observer: IObserver<'T>) ->
+            let enumerator = sequence.GetEnumerator()
+            let mutable shouldStop = false
+
+            let obs =
+                generate2
+                    (enumerator.Current)
+                    (fun _ -> not shouldStop)
+                    (fun _ ->
+                        shouldStop <- not (enumerator.MoveNext())
+                        enumerator.Current)
+                    id
+                    (fun _ -> period)
+
+            obs.Subscribe(observer))
+        |> fromFun
+        |> asObservable
 
     let join observables = observables |> bind id
 
@@ -381,7 +402,7 @@ module Functions =
 
     let tryFirst (observable: IObservable<'T>) = observable |> take 1 |> tryLast
 
-    let first (observable: IObservable<'T>) = //LanguagePrimitives.GenericZero
+    let first (observable: IObservable<'T>) =
         observable
         |> tryFirst
         |> Option.defaultWith (fun () ->
@@ -401,7 +422,7 @@ module Functions =
 
     let concat (first: IObservable<'T>) (second: IObservable<'T>) =
         fun (observer: IObserver<'T>) ->
-            let innerSubs: IDisposable ref = ref null
+            let innerSubs: IDisposable = null
 
             let subs1 =
                 ObserverFactory.CreateForwarding(
@@ -413,17 +434,36 @@ module Functions =
                             |> ObserverFactory.CreateForwarding
                             |> second.Subscribe
 
-                        Interlocked.Exchange(innerSubs, subs) |> ignore)
+                        Interlocked.Exchange(ref innerSubs, subs)
+                        |> ignore)
                 )
                 |> first.Subscribe
 
             [ subs1
               Disposable.create (fun () ->
-                  if innerSubs <> ref null then
-                      do innerSubs.Value.Dispose()) ]
+                  if innerSubs <> null then
+                      do innerSubs.Dispose()) ]
             |> Disposable.composite
         |> fromFun
         |> asObservable
+
+    let concatAll observables =
+        let rec concatInternal observables =
+            match observables with
+            | s when Seq.isEmpty s -> empty ()
+            | s ->
+                s
+                |> Seq.tail
+                |> concatInternal
+                |> concat (s |> Seq.head)
+
+        concatInternal observables
+
+    let repeat count observable =
+        if count <= 0 then
+            "count must be grater than 0 " |> invalidOp
+
+        observable |> Seq.replicate count |> concatAll
 
     let groupBy (keySelector: 'T -> 'TKey) (observable: IObservable<'T>) =
         fun (observer: IObserver<'TKey * IObservable<'T>>) ->
@@ -487,8 +527,7 @@ module Functions =
     let fold folder (state: 'TState) (observable: IObservable<'T>) =
         scan folder state observable |> takeLast 1
 
-    let inline sum () =
-        fold (+) LanguagePrimitives.GenericZero
+    let inline sum () = fold (+) LanguagePrimitives.GenericZero
 
     let inline min (observable: IObservable<'T>) =
         observable

@@ -3,8 +3,9 @@ module Test
 
 open System
 open System.Threading
-open FsRX
 open FsRX.Stateful.Functions
+open FsRX.Stateful
+
 
 [<EntryPoint>]
 let main argv =
@@ -63,9 +64,8 @@ let main argv =
 
 
     let obs =
-        interval (1.0 |> TimeSpan.FromSeconds)
-        |> FsRX.Stateful.Functions.take 5
-    
+        seq {1;2;3;6} |> withInterval (0.5 |> TimeSpan.FromSeconds)
+          
     //let subs =
     //    Observer.Create(
     //        (fun (v: int) -> Console.WriteLine(v)),
@@ -87,24 +87,27 @@ let main argv =
     let observable2 =
         obs
         |> bind (fun v -> TimeSpan.FromSeconds(1.0) |> interval |> map (fun v2 -> v*10 + v2)  |> take 3)
+    
+    let subs = Observers.createDiagnostic() |>  obs.Subscribe 
 
-    let subs =
-        Observer.Create(
-            (fun ((p:int),(v:IObservable<int>)) -> 
-               // if p = 1 then      
-                    Console.WriteLine(p)
-                    Observer.Create(
-                               (fun (v: int) -> Console.WriteLine((p |> string)+ " " + (v |> string))),
-                               (fun e -> Console.WriteLine("Error: " + e.ToString())),
-                               (fun () -> Console.WriteLine("Completed " + string p ))
-                    ) |> fromObserver |>  v.Subscribe |> ignore
+    //let obs = 
+    //let subs =
+    //    Observer.Create(
+    //        (fun ((p:int),(v:IObservable<int>)) -> 
+    //           // if p = 1 then      
+    //                Console.WriteLine(p)
+    //                Observer.Create(
+    //                           (fun (v: int) -> Console.WriteLine((p |> string)+ " " + (v |> string))),
+    //                           (fun e -> Console.WriteLine("Error: " + e.ToString())),
+    //                           (fun () -> Console.WriteLine("Completed " + string p ))
+    //                ) |> fromObserver |>  v.Subscribe |> ignore
             
-            ),
-            (fun e -> Console.WriteLine("Error: " + e.ToString())),
-            (fun () -> Console.WriteLine("Completed global"))
-        )
-        |> fromObserver
-        |> (obs |> groupBy (fun v -> v % 2)).Subscribe
+    //        ),
+    //        (fun e -> Console.WriteLine("Error: " + e.ToString())),
+    //        (fun () -> Console.WriteLine("Completed global"))
+    //    )
+    //    |> fromObserver
+    //    |> (obs |> groupBy (fun v -> v % 2)).Subscribe
 
     Console.ReadKey() |> ignore
     subs.Dispose()
