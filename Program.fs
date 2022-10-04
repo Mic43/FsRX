@@ -60,12 +60,12 @@ let main argv =
     //Console.ReadKey() |> ignore
     //s2.Dispose()
 
-  
 
 
-    let obs =
-        seq {1;2;3;6} |> withInterval (0.5 |> TimeSpan.FromSeconds)
-          
+
+    //let obs =
+    //    interval (1 |> TimeSpan.FromSeconds) |> concat (seq {1;2;3;6} |> withInterval (0.5 |> TimeSpan.FromSeconds))
+
     //let subs =
     //    Observer.Create(
     //        (fun (v: int) -> Console.WriteLine(v)),
@@ -84,24 +84,46 @@ let main argv =
     //    |> fromObserver |> obs.Subscribe
     //Console.ReadKey() |> ignore
 
-    let observable2 =
-        obs
-        |> bind (fun v -> TimeSpan.FromSeconds(1.0) |> interval |> map (fun v2 -> v*10 + v2)  |> take 3)
-    
-    let subs = Observers.createDiagnostic() |>  obs.Subscribe 
+    //let observable2 =
+    //    obs
+    //    |> bind (fun v -> TimeSpan.FromSeconds(1.0) |> interval |> map (fun v2 -> v*10 + v2)  |> take 3)
 
-    //let obs = 
+    // let subs = Observers.createDiagnostic() |>  obs.Subscribe
+
+    let outerCount = 4
+    let innerCount = 3
+
+    let observableOfObservables =
+        TimeSpan.FromSeconds 2
+        |> interval
+        |> take outerCount
+        |> map (fun i ->
+            TimeSpan.FromSeconds 1
+            |> interval
+            |> map (fun j -> i * 10 + j)
+            |> take innerCount)
+
+
+    let subs =
+        (observableOfObservables |> switch)
+            .Subscribe(Observers.createDiagnostic ())
+    //   Console.ReadKey() |> ignore
+    //subs.Dispose()
+
+
+
+    //let obs =
     //let subs =
     //    Observer.Create(
-    //        (fun ((p:int),(v:IObservable<int>)) -> 
-    //           // if p = 1 then      
+    //        (fun ((p:int),(v:IObservable<int>)) ->
+    //           // if p = 1 then
     //                Console.WriteLine(p)
     //                Observer.Create(
     //                           (fun (v: int) -> Console.WriteLine((p |> string)+ " " + (v |> string))),
     //                           (fun e -> Console.WriteLine("Error: " + e.ToString())),
     //                           (fun () -> Console.WriteLine("Completed " + string p ))
     //                ) |> fromObserver |>  v.Subscribe |> ignore
-            
+
     //        ),
     //        (fun e -> Console.WriteLine("Error: " + e.ToString())),
     //        (fun () -> Console.WriteLine("Completed global"))
@@ -111,5 +133,5 @@ let main argv =
 
     Console.ReadKey() |> ignore
     subs.Dispose()
-    Console.ReadKey() |> ignore 
+    Console.ReadKey() |> ignore
     0
