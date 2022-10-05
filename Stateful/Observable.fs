@@ -11,12 +11,16 @@ open System.Collections.Generic
 [<AbstractClass>]
 type BasicObservable<'T>() =
     let subscriptions = new ConcurrentBag<IObserver<'T>>()
-    member internal this.Subscriptions = subscriptions
+    let mutable isStopped = 0
+    let isStoppedLocker = new Object()
+
+    member internal _.Subscriptions = subscriptions
+    member internal _.IsStopped = isStopped
 
     interface IObservable<'T> with
         member this.Subscribe(observer: IObserver<'T>) : IDisposable = this.Subscribe(observer)
 
-    abstract Subscribe : IObserver<'T> -> IDisposable
+    // abstract Subscribe : IObserver<'T> -> IDisposable
 
     member internal this.TryNotify (observer: IObserver<'T>) event =
         if this.Subscriptions.TryPeek(ref observer) then
@@ -31,12 +35,28 @@ type BasicObservable<'T>() =
         this.Subscriptions
         |> Seq.iter (fun o -> this.TryNotify o event)
 
-    default this.Subscribe(observer: IObserver<'T>) : IDisposable =
+    member internal _.TryStopAndThenCall onStopped =
+        Monitor.Enter(isStoppedLocker)
+
+        if isStopped = 0 then
+            Interlocked.Exchange(ref isStopped, 1) |> ignore
+            Monitor.Exit(isStoppedLocker)
+            onStopped ()
+        else
+            Monitor.Exit(isStoppedLocker)
+
+
+    abstract member SubscribeSpecific : IObserver<'T> -> IDisposable
+    //  default this.SubscribeSpecific(_: IObserver<'T>) : IDisposable = Disposable.empty()
+
+    member this.Subscribe(observer: IObserver<'T>) : IDisposable =
         this.Subscriptions.Add(observer)
 
-        Disposable.create (fun () ->
-            this.Subscriptions.TryTake(ref observer) |> ignore
-            ())
+        let subscription = this.SubscribeSpecific(observer)
+
+        [ Disposable.create (fun () -> this.Subscriptions.TryTake(ref observer) |> ignore)
+          subscription ]
+        |> Disposable.composite
 
 type private ObserverFactory<'T> =
     static member Create<'T>(onNext: 'T -> unit, (?onError: Exception -> unit), (?onCompleted: unit -> unit)) =
@@ -75,7 +95,6 @@ module Observers =
             (fun () -> Console.WriteLine("Completed"))
         )
 
-
 module Functions =
     let fromObserver<'T> (o: FsRX.Observer<'T>) =
         { new IObserver<'T> with
@@ -87,38 +106,38 @@ module Functions =
 
     let private fromFun (f: IObserver<'T> -> IDisposable) =
         { new BasicObservable<'T>() with
-            override this.Subscribe(observer) =
-                let subs = base.Subscribe(observer)
+            override this.SubscribeSpecific(observer) = observer |> f }
+    //let subs = base.Subscribe(observer)
 
-                [ observer |> f; subs ] |> Disposable.composite }
+    //[ observer |> f; subs ] |> Disposable.composite }
 
     let fromSeq<'T> seq : IObservable<'T> =
         { new BasicObservable<'T>() with
-            override this.Subscribe(observer) =
-                let subs = base.Subscribe(observer)
+            override this.SubscribeSpecific(observer) =
+                // let subs = base.Subscribe(observer)
 
                 seq
                 |> Seq.iter (fun v -> v |> Next |> this.TryNotify(observer))
 
                 Completed |> this.TryNotify(observer)
 
-                subs }
+                Disposable.empty () }
 
     let ret value = fromSeq (Seq.singleton value)
     let empty () = fromSeq Seq.empty
 
     let never () =
         { new BasicObservable<'T>() with
-            override _.Subscribe(_) = Disposable.empty () }
+            override _.SubscribeSpecific(_) = Disposable.empty () }
         |> asObservable
 
     let throw e =
         { new BasicObservable<'T>() with
-            override this.Subscribe(observer) =
-                let subs = base.Subscribe(observer)
+            override this.SubscribeSpecific(observer) =
+                // let subs = base.Subscribe(observer)
                 e |> Error |> this.TryNotify(observer)
 
-                subs }
+                Disposable.empty () }
 
     let delay (period: TimeSpan) (observable: IObservable<'T>) =
         fun (observer: IObserver<'T>) ->
@@ -241,70 +260,58 @@ module Functions =
     //        Monitor.Exit(locker)
 
     let bind (mapper: 'T -> IObservable<'V>) (observable: IObservable<'T>) : IObservable<'V> =
-        fun (observer: IObserver<'V>) ->
-            let outerCompleted = ref 0
-            let isStopped = ref 0
-            let childObservalesCompleted = ref 0
+        { new BasicObservable<'V>() with
+            override this.SubscribeSpecific(observer) =
+                let outerCompleted = ref 0             
+                let childObservalesCompleted = ref 0
 
-            let completedLock = new Object()
+                let childSubscriptions =
+                    new Collections.Concurrent.ConcurrentBag<IDisposable>()
 
-            let childSubscriptions =
-                new Collections.Concurrent.ConcurrentBag<IDisposable>()
+                let stopAndDispose () =                    
+                    for c in childSubscriptions do
+                        c.Dispose()
 
-            let stopAndDispose () =
-                Interlocked.Exchange(isStopped, 1) |> ignore
+                let allInnerCompleted () =
+                    childObservalesCompleted.Value = childSubscriptions.Count
 
-                for c in childSubscriptions do
-                    c.Dispose()
+                let tryHandleCompleted () =
+                    if outerCompleted.Value = 1 && allInnerCompleted () then
+                        Completed |> this.TryNotify observer
+                        stopAndDispose ()
 
-            let allInnerCompleted () =
-                childObservalesCompleted.Value = childSubscriptions.Count
-
-            let tryHandleCompleted () =
-                if outerCompleted.Value = 1
-                   && isStopped.Value = 0
-                   && allInnerCompleted () then
-                    observer.OnCompleted()
+                let tryHandleError e (_: unit) =
                     stopAndDispose ()
+                    e |> Error |> this.TryNotify observer
 
-            let tryHandleError e (_: unit)  =
-                if isStopped.Value = 0 then
-                    stopAndDispose ()
-                    observer.OnError(e)
+                let observerForwarding =
+                    ObserverFactory.Create(
+                        (fun v ->
+                            if this.IsStopped = 0 then
+                                v |> Next |> this.TryNotify observer),
+                        tryHandleError >> this.TryStopAndThenCall,
+                        (fun () ->
+                            Interlocked.Increment(childObservalesCompleted)
+                            |> ignore
 
-            let observerForwarding =
-                ObserverFactory.Create(
-                    (fun v ->
-                        if isStopped.Value = 0 then
-                            observer.OnNext(v)),
-                    tryHandleError >> lock completedLock,
-                    //(fun e ->
-                    //    (fun () -> tryHandleError e) |> lock completedLock),
-                    (fun () ->
-                        Interlocked.Increment(childObservalesCompleted)
-                        |> ignore
+                            this.TryStopAndThenCall tryHandleCompleted)
+                    )
 
-                        tryHandleCompleted |> lock completedLock)
-                )
-
-            let observerInternal =
-                ObserverFactory.Create(
-                    (fun value ->
-                        if outerCompleted.Value = 0 && isStopped.Value = 0 then
-                            let observableChild = (value |> mapper)
-                            childSubscriptions.Add(observableChild.Subscribe(observerForwarding))),
-                    tryHandleError >> lock completedLock,
-                    (fun () ->
-                        fun () ->
+                let observerInternal =
+                    ObserverFactory.Create(
+                        (fun value ->
+                            if outerCompleted.Value = 0 && this.IsStopped = 0 then
+                                let observableChild = (value |> mapper)
+                                childSubscriptions.Add(observableChild.Subscribe(observerForwarding))),
+                        tryHandleError >> this.TryStopAndThenCall,
+                        (fun () ->
                             Interlocked.Exchange(outerCompleted, 1) |> ignore
-                            tryHandleCompleted ()
-                        |> lock completedLock)
-                )
+                            this.TryStopAndThenCall tryHandleCompleted)
+                    )
 
-            [ observerInternal |> observable.Subscribe
-              stopAndDispose |> Disposable.create ]
-            |> Disposable.composite
-        |> fromFun
+                [ observerInternal |> observable.Subscribe
+                  stopAndDispose |> Disposable.create ]
+                |> Disposable.composite }
         |> asObservable
 
     let map (mapper: 'T -> 'V) =
@@ -489,8 +496,9 @@ module Functions =
         (fun (observer: IObserver<'T>) ->
             let currentInnerSubscription: IDisposable ref = ref null
 
+            let completedLock = new Object()
             let outerCompleted = ref 0
-            let isStopped = ref 0
+            let innerCompleted = ref 0
 
             let tryDispose () =
                 if currentInnerSubscription.Value = null |> not then
@@ -504,9 +512,13 @@ module Functions =
                                 (fun v -> v |> observer.OnNext),
                                 (fun e -> e |> observer.OnError),
                                 (fun () ->
-                                    if outerCompleted.Value = 1 then
-                                        tryDispose ()
-                                        observer.OnCompleted())
+                                    Interlocked.Exchange(innerCompleted, 1) |> ignore
+
+                                    fun () ->
+                                        if outerCompleted.Value = 1 then
+                                            tryDispose ()
+                                            observer.OnCompleted()
+                                    |> lock completedLock)
                             )
 
                         tryDispose ()
@@ -514,7 +526,14 @@ module Functions =
                         Interlocked.Exchange(currentInnerSubscription, innerObservable.Subscribe(innerObserver))
                         |> ignore),
                     (fun e -> e |> observer.OnError),
-                    (fun () -> Interlocked.Exchange(outerCompleted, 1) |> ignore)
+                    (fun () ->
+                        Interlocked.Exchange(outerCompleted, 1) |> ignore
+
+                        fun () ->
+                            if innerCompleted.Value = 1 then
+                                tryDispose ()
+                                observer.OnCompleted()
+                        |> lock completedLock)
                 )
 
             [ tryDispose |> Disposable.create

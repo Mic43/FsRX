@@ -94,18 +94,16 @@ let main argv =
     let innerCount = 3
 
     let observableOfObservables =
-        TimeSpan.FromSeconds 2
-        |> interval
+        range 1 10
         |> take outerCount
         |> map (fun i ->
-            TimeSpan.FromSeconds 1
-            |> interval
+           range 1 10
             |> map (fun j -> i * 10 + j)
             |> take innerCount)
 
 
     let subs =
-        (observableOfObservables |> switch)
+        (observableOfObservables |> switch )
             .Subscribe(Observers.createDiagnostic ())
     //   Console.ReadKey() |> ignore
     //subs.Dispose()
