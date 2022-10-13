@@ -94,10 +94,10 @@ let main argv =
     let innerCount = 3
 
     let observableOfObservables =
-        range 1 10
+        (2 |> TimeSpan.FromSeconds) |> interval
         |> take outerCount
         |> map (fun i ->
-           range 1 10
+            (1 |> TimeSpan.FromSeconds) |> interval
             |> map (fun j -> i * 10 + j)
             |> take innerCount)
 
